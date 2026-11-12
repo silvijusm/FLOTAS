@@ -1,0 +1,22 @@
+name: Mobiliosios programėlės
+on:
+  workflow_dispatch:
+env:
+  SERVER_URL: ${{ vars.SERVER_URL }}
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - run: cd mobile && npm install && npm run prepare-www && npx cap add android && npx cap sync android
+      - name: Leidimai ir fonas
+        run: |
+          M=mobile/android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/><uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE"/><uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/><uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n<application#' $M
+      - run: cd mobile/android && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with: { name: flotas-android-apk, path: mobile/android/app/build/outputs/apk/debug/app-debug.apk }
