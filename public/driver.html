@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="lt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#13233a">
+<link rel="manifest" href="/manifest.json">
+<title>Flotas – vairuotojas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Arial,sans-serif;background:#f3f5f7;color:#1b2430}
+#pair{max-width:380px;margin:10vh auto;padding:0 14px;text-align:center}
+.card{background:#fff;border-radius:12px;padding:22px;box-shadow:0 2px 10px #0001}
+input{width:100%;padding:14px;font-size:28px;letter-spacing:8px;text-align:center;text-transform:uppercase;border:1px solid #cfd6de;border-radius:10px;margin:10px 0}
+.btn{background:#1f6feb;color:#fff;border:0;border-radius:10px;padding:14px;font-size:17px;width:100%;cursor:pointer}
+.btn.sec{background:#e6ebf1;color:#1b2430;font-size:14px;padding:9px;width:auto}
+.err{color:#c0262d;min-height:22px}
+#run{display:none;height:100vh;flex-direction:column}
+header{background:#13233a;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center}
+#map{flex:1}
+#bar{background:#fff;padding:12px 14px;border-top:1px solid #dde3ea;font-size:15px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:#8a94a1}
+.dot.ok{background:#1a9b4b}.dot.bad{background:#c0262d}
+</style>
+</head>
+<body>
+<div id="pair"><div class="card">
+  <h2 style="margin-top:0">📍 Vairuotojo programėlė</h2>
+  <p>Įveskite kodą, kurį gavote iš įmonės vadovo.</p>
+  <input id="code" maxlength="6" placeholder="------" autocapitalize="characters" autocomplete="off">
+  <div class="err" id="err"></div>
+  <button class="btn" id="go">Prisijungti</button>
+  <p style="font-size:12px;color:#667">Prisijungę sutinkate, kad jūsų telefono vieta būtų rodoma įmonei. <a href="/privacy.html">Privatumo politika</a></p>
+</div></div>
+
+<div id="run">
+  <header><div><b id="plate"></b><div style="font-size:12px;opacity:.8" id="comp"></div></div><button class="btn sec" id="stop">Atjungti</button></header>
+  <div id="map"></div>
+  <div id="bar"><span class="dot" id="dot"></span><span id="status">Ieškoma GPS...</span></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="config.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+const NATIVE=!!(window.Capacitor&&window.Capacitor.isNativePlatform&&window.Capacitor.isNativePlatform());
+const API=(window.FLOTAS_SERVER||'')+'/api';
+let token=localStorage.getItem('dtoken');
+let map,me,acc,wakeLock,watchId,lastSent=0,lastPos=null;
+const SEND_EVERY=5000; // ms
+
+$('#go').onclick=async()=>{
+  $('#err').textContent='';
+  try{
+    const r=await fetch(API+'/driver/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:$('#code').value})});
+    const j=await r.json();if(!r.ok)throw new Error(j.error);
+    token=j.token;localStorage.setItem('dtoken',token);start(j);
+  }catch(e){$('#err').textContent=e.message}
+};
+$('#stop').onclick=async()=>{
+  if(!confirm('Atjungti šį telefoną? Sekimas bus sustabdytas.'))return;
+  try{await fetch(API+'/driver/unpair',{method:'POST',headers:{Authorization:'Bearer '+token}})}catch(e){}
+  localStorage.removeItem('dtoken');location.reload();
+};
+
+async function start(info){
+  $('#pair').style.display='none';$('#run').style.display='flex';
+  if(!info){
+    const r=await fetch(API+'/driver/me',{headers:{Authorization:'Bearer '+token}});
+    if(!r.ok){localStorage.removeItem('dtoken');location.reload();return}
+    info=await r.json();
+  }
+  $('#plate').textContent=info.plate;$('#comp').textContent=info.company+(info.driver_name?' · '+info.driver_name:'');
+  map=L.map('map').setView([55.17,23.9],7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  if(!NATIVE&&!navigator.geolocation){setStatus('Šis įrenginys nepalaiko GPS','bad');return}
+  if(NATIVE){
+    const BG=window.Capacitor.registerPlugin('BackgroundGeolocation');
+    BG.addWatcher({backgroundTitle:'Flotas seka automobilį',backgroundMessage:'Vieta siunčiama įmonei',requestPermissions:true,stale:false,distanceFilter:10},
+      (loc,err)=>{ if(err){ if(err.code==='NOT_AUTHORIZED'){ if(confirm('Reikia leidimo „Visada“ naudoti vietovę. Atidaryti nustatymus?'))BG.openSettings(); } setStatus('Nėra GPS leidimo','bad'); return; }
+        onPos({coords:{latitude:loc.latitude,longitude:loc.longitude,speed:loc.speed,heading:loc.bearing,accuracy:loc.accuracy}}); });
+  } else {
+    watchId=navigator.geolocation.watchPosition(onPos,onErr,{enableHighAccuracy:true,maximumAge:2000,timeout:20000});
+    keepAwake();
+  }
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')keepAwake()});
+}
+async function keepAwake(){try{if('wakeLock' in navigator)wakeLock=await navigator.wakeLock.request('screen')}catch(e){}}
+function setStatus(t,c){$('#status').textContent=t;$('#dot').className='dot '+(c||'')}
+function onErr(e){setStatus(e.code===1?'Leiskite pasiekti vietovę (GPS) naršyklės nustatymuose':'GPS signalas nerastas','bad')}
+async function onPos(p){
+  const {latitude:lat,longitude:lng,speed,heading,accuracy}=p.coords;
+  const ll=[lat,lng];
+  if(!me){me=L.circleMarker(ll,{radius:9,color:'#fff',weight:3,fillColor:'#1f6feb',fillOpacity:1}).addTo(map);
+    acc=L.circle(ll,{radius:accuracy,color:'#1f6feb',weight:1,fillOpacity:.08}).addTo(map);map.setView(ll,16)}
+  else{me.setLatLng(ll);acc.setLatLng(ll).setRadius(accuracy);map.panTo(ll)}
+  const t=Date.now();if(t-lastSent<SEND_EVERY)return;lastSent=t;
+  try{
+    const r=await fetch(API+'/driver/location',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},
+      body:JSON.stringify({lat,lng,speed,heading})});
+    if(r.status===401){localStorage.removeItem('dtoken');alert('Įmonė atjungė šį telefoną.');location.reload();return}
+    const kmh=speed!=null?Math.round(speed*3.6):0;
+    setStatus(`Siunčiama įmonei · ${kmh} km/h · ${new Date().toLocaleTimeString('lt-LT')}`,'ok');
+  }catch(e){setStatus('Nėra interneto – bandoma vėl...','bad')}
+}
+if(token)start();
+</script>
+</body>
+</html>

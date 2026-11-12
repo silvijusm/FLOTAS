@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="lt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Flotas – automobilių sekimas</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,Arial,sans-serif;background:#f3f5f7;color:#1b2430}
+button,input{font:inherit}
+.card{background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 10px #0001}
+#auth{max-width:380px;margin:8vh auto;padding:0 14px}
+#auth h1{margin:0 0 4px}#auth p{color:#667;margin:0 0 16px}
+input{width:100%;padding:11px;margin:6px 0;border:1px solid #cfd6de;border-radius:8px}
+.btn{background:#1f6feb;color:#fff;border:0;border-radius:8px;padding:11px 14px;cursor:pointer;width:100%;margin-top:6px}
+.btn.sec{background:#e6ebf1;color:#1b2430}.btn.sm{width:auto;padding:6px 10px;margin:0;font-size:13px}
+.link{background:none;border:0;color:#1f6feb;cursor:pointer;padding:8px 0}
+.err{color:#c0262d;min-height:20px;font-size:14px}
+#app{display:none;height:100vh;flex-direction:column}
+header{background:#13233a;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+header b{font-size:17px}
+main{flex:1;display:flex;min-height:0}
+#side{width:360px;overflow:auto;background:#fff;border-right:1px solid #dde3ea;padding:10px}
+#map{flex:1}
+.v{border:1px solid #e1e6ec;border-radius:10px;padding:10px;margin-bottom:8px;cursor:pointer}
+.v.sel{border-color:#1f6feb;background:#f0f6ff}
+.v .top{display:flex;justify-content:space-between;align-items:center}
+.plate{font-weight:700;font-size:16px}
+.badge{font-size:12px;color:#fff;border-radius:20px;padding:2px 9px}
+.vaziuoja{background:#1a9b4b}.stovi{background:#e08a00}.neprisijunges{background:#8a94a1}.nezinoma{background:#8a94a1}
+.sub{font-size:13px;color:#667;margin-top:3px}
+.code{background:#fff7d6;border:1px dashed #d4a800;border-radius:8px;padding:8px;margin-top:8px;font-size:14px}
+.code b{font-size:22px;letter-spacing:3px}
+.row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+dialog{border:0;border-radius:12px;padding:20px;width:min(380px,92vw)}
+.pin{border-radius:50%;border:3px solid #fff;box-shadow:0 1px 6px #0007;color:#fff;font-weight:700;font-size:11px;display:flex;align-items:center;justify-content:center;width:34px;height:34px}
+@media(max-width:760px){main{flex-direction:column-reverse}#side{width:100%;height:42%;border:0;border-top:1px solid #dde3ea}}
+</style>
+</head>
+<body>
+<div id="auth"><div class="card">
+  <h1>🚚 Flotas</h1><p>Jūsų automobilių sekimas realiu laiku</p>
+  <input id="cname" placeholder="Įmonės pavadinimas" style="display:none">
+  <input id="email" type="email" placeholder="El. paštas">
+  <input id="pass" type="password" placeholder="Slaptažodis">
+  <div class="err" id="aerr"></div>
+  <button class="btn" id="abtn">Prisijungti</button>
+  <button class="link" id="atoggle">Neturite paskyros? Registruotis</button>
+  <hr style="border:0;border-top:1px solid #e6ebf1">
+  <a href="/driver.html" class="link" style="text-decoration:none">Esu vairuotojas →</a> · <a href="/privacy.html" class="link" style="text-decoration:none">Privatumas</a>
+</div></div>
+
+<div id="app">
+  <header><b id="cn">Flotas</b><span><button class="btn sec sm" id="add">+ Automobilis</button> <button class="btn sec sm" id="out">Atsijungti</button></span></header>
+  <main><div id="side"></div><div id="map"></div></main>
+</div>
+
+<dialog id="dlg"><h3 style="margin-top:0" id="dtitle">Naujas automobilis</h3>
+  <input id="d_plate" placeholder="Valstybinis numeris (pvz. ABC123)">
+  <input id="d_label" placeholder="Pavadinimas / modelis (nebūtina)">
+  <input id="d_driver" placeholder="Vairuotojo vardas">
+  <div class="row"><button class="btn" id="d_ok">Išsaugoti</button><button class="btn sec" id="d_cancel">Atšaukti</button></div>
+</dialog>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $=s=>document.querySelector(s);
+let token=localStorage.getItem('ctoken'), register=false, vehicles=[], sel=null, editId=null;
+let map, markers={}, trackLine=null, firstFit=true;
+
+async function api(path,opt={}){
+  const r=await fetch('/api'+path,{method:opt.method||'GET',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:opt.body?JSON.stringify(opt.body):undefined});
+  const j=await r.json().catch(()=>({}));
+  if(r.status===401&&token&&path!=='/company/login'){logout();}
+  if(!r.ok)throw new Error(j.error||'Klaida');
+  return j;
+}
+$('#atoggle').onclick=()=>{register=!register;$('#cname').style.display=register?'':'none';
+  $('#abtn').textContent=register?'Sukurti paskyrą':'Prisijungti';
+  $('#atoggle').textContent=register?'Jau turite paskyrą? Prisijungti':'Neturite paskyros? Registruotis';};
+$('#abtn').onclick=async()=>{
+  $('#aerr').textContent='';
+  try{
+    const j=await api(register?'/company/register':'/company/login',{method:'POST',body:{name:$('#cname').value,email:$('#email').value,password:$('#pass').value}});
+    token=j.token;localStorage.setItem('ctoken',token);start();
+  }catch(e){$('#aerr').textContent=e.message}
+};
+function logout(){localStorage.removeItem('ctoken');token=null;location.reload()}
+$('#out').onclick=logout;
+
+function ago(ts){if(!ts)return 'nėra duomenų';const s=Math.round((Date.now()-ts)/1000);
+  if(s<60)return s+' s. atgal';if(s<3600)return Math.round(s/60)+' min. atgal';
+  if(s<86400)return Math.round(s/3600)+' val. atgal';return Math.round(s/86400)+' d. atgal'}
+function dur(ts){if(!ts)return '';const m=Math.round((Date.now()-ts)/60000);
+  return m<60?m+' min.':Math.floor(m/60)+' val. '+(m%60)+' min.'}
+const STAT={vaziuoja:'Važiuoja',stovi:'Stovi',neprisijunges:'Nėra ryšio',nezinoma:'Nepasijungęs'};
+const COL={vaziuoja:'#1a9b4b',stovi:'#e08a00',neprisijunges:'#8a94a1',nezinoma:'#8a94a1'};
+
+async function start(){
+  $('#auth').style.display='none';$('#app').style.display='flex';
+  try{const me=await api('/company/me');$('#cn').textContent='🚚 '+me.name}catch(e){return}
+  map=L.map('map').setView([55.17,23.9],7);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+  await refresh();setInterval(refresh,5000);
+}
+async function refresh(){
+  try{vehicles=await api('/vehicles')}catch(e){return}
+  render();drawMarkers();
+}
+function render(){
+  const side=$('#side');
+  if(!vehicles.length){side.innerHTML='<p style="padding:10px;color:#667">Dar nėra automobilių. Spauskite „+ Automobilis“.</p>';return}
+  side.innerHTML=vehicles.map(v=>`
+  <div class="v ${sel===v.id?'sel':''}" data-id="${v.id}">
+    <div class="top"><span class="plate">${esc(v.plate)}</span><span class="badge ${v.state}">${STAT[v.state]}</span></div>
+    <div class="sub">${esc(v.driver_name||'Vairuotojas nenurodytas')}${v.label?' · '+esc(v.label):''}</div>
+    <div class="sub">${v.last_ts?(v.state==='vaziuoja'?Math.round(v.speed)+' km/h · ':'')+(v.state==='neprisijunges'?'paskutinį kartą ':(v.state==='nezinoma'?'':STAT[v.state].toLowerCase()+' '+dur(v.state_since)+' · '))+ago(v.last_ts):'Vairuotojas dar neprisijungė'}</div>
+    ${v.invite_code?`<div class="code">Kodas vairuotojui: <b>${v.invite_code}</b><div class="sub">Vairuotojas atidaro <i>${location.origin}/driver.html</i> ir įveda šį kodą.</div></div>`:''}
+    <div class="row">
+      <button class="btn sec sm" data-act="track">Maršrutas 24 val.</button>
+      <button class="btn sec sm" data-act="edit">Redaguoti</button>
+      <button class="btn sec sm" data-act="code">${v.paired?'Atjungti / naujas kodas':'Naujas kodas'}</button>
+      <button class="btn sec sm" data-act="del">Šalinti</button>
+    </div>
+  </div>`).join('');
+}
+$('#side').addEventListener('click',async e=>{
+  const card=e.target.closest('.v');if(!card)return;const id=+card.dataset.id;const act=e.target.dataset.act;
+  const v=vehicles.find(x=>x.id===id);
+  if(!act){sel=id;render();if(v.lat!=null)map.setView([v.lat,v.lng],Math.max(map.getZoom(),14));return}
+  if(act==='track'){sel=id;await showTrack(id)}
+  if(act==='edit'){editId=id;openDlg(v)}
+  if(act==='code'){if(!v.paired||confirm('Senas telefonas bus atjungtas. Tęsti?')){await api(`/vehicles/${id}/new-code`,{method:'POST'});refresh()}}
+  if(act==='del'){if(confirm('Pašalinti '+v.plate+'?')){await api('/vehicles/'+id,{method:'DELETE'});refresh()}}
+});
+async function showTrack(id){
+  const pts=await api(`/vehicles/${id}/track?hours=24`);
+  if(trackLine)map.removeLayer(trackLine);
+  if(pts.length<2){alert('Per 24 val. maršruto taškų nėra.');return}
+  trackLine=L.polyline(pts.map(p=>[p.lat,p.lng]),{color:'#1f6feb',weight:4}).addTo(map);
+  map.fitBounds(trackLine.getBounds(),{padding:[30,30]});
+}
+function drawMarkers(){
+  const seen=new Set();const bounds=[];
+  vehicles.forEach(v=>{
+    if(v.lat==null)return;seen.add(v.id);bounds.push([v.lat,v.lng]);
+    const html=`<div class="pin" style="background:${COL[v.state]}">${esc(v.plate.slice(-3))}</div>`;
+    const icon=L.divIcon({html,className:'',iconSize:[34,34],iconAnchor:[17,17]});
+    const tip=`<b>${esc(v.plate)}</b><br>${STAT[v.state]}${v.state==='vaziuoja'?' · '+Math.round(v.speed)+' km/h':''}<br>${esc(v.driver_name||'')}`;
+    if(markers[v.id]){markers[v.id].setLatLng([v.lat,v.lng]).setIcon(icon).setPopupContent(tip)}
+    else markers[v.id]=L.marker([v.lat,v.lng],{icon}).addTo(map).bindPopup(tip);
+  });
+  Object.keys(markers).forEach(id=>{if(!seen.has(+id)){map.removeLayer(markers[id]);delete markers[id]}});
+  if(firstFit&&bounds.length){map.fitBounds(bounds,{padding:[40,40],maxZoom:14});firstFit=false}
+}
+function openDlg(v){$('#dtitle').textContent=v?'Redaguoti automobilį':'Naujas automobilis';
+  $('#d_plate').value=v?v.plate:'';$('#d_label').value=v?.label||'';$('#d_driver').value=v?.driver_name||'';$('#dlg').showModal()}
+$('#add').onclick=()=>{editId=null;openDlg(null)};
+$('#d_cancel').onclick=()=>$('#dlg').close();
+$('#d_ok').onclick=async()=>{
+  const body={plate:$('#d_plate').value,label:$('#d_label').value,driver_name:$('#d_driver').value};
+  try{await api(editId?'/vehicles/'+editId:'/vehicles',{method:editId?'PUT':'POST',body});$('#dlg').close();refresh()}catch(e){alert(e.message)}
+};
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+if(token)start();
+</script>
+</body>
+</html>
