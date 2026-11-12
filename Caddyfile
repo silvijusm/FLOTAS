@@ -1,0 +1,3 @@
+2-29-207-235.sslip.io {
+	reverse_proxy flotas:3000
+}

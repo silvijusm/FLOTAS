@@ -1,0 +1,13 @@
+# Paleidimas VPS serveryje (pvz. Hetzner): docker compose up -d
+# Pakeiskite jusu-domenas.lt Caddyfile faile ir nukreipkite domeno A įrašą į serverio IP.
+services:
+  flotas:
+    build: .
+    restart: always
+    volumes: [ "flotas-data:/data" ]
+  caddy:
+    image: caddy:2
+    restart: always
+    ports: [ "80:80", "443:443" ]
+    volumes: [ "./Caddyfile:/etc/caddy/Caddyfile", "caddy-data:/data" ]
+volumes: { flotas-data: {}, caddy-data: {} }
